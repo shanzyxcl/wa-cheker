@@ -1,0 +1,315 @@
+name: WhatsApp Number Checker
+
+on:
+  workflow_dispatch:
+    inputs:
+      delay:
+        description: 'Delay between checks (seconds)'
+        required: false
+        default: '3'
+      batch_size:
+        description: 'Auto-save interval'
+        required: false
+        default: '10'
+
+jobs:
+  check-numbers:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install selenium requests
+    
+    - name: Install Chrome and ChromeDriver
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser chromium-chromedriver
+        
+    - name: Create numbers file
+      run: |
+        cat > numbers.txt << 'EOF'
+        584166755554
+        584266668648
+        584266668694
+        584168577772
+        584266664293
+        584165722220
+        584266654901
+        584263000752
+        584162763111
+        584266656093
+        584167776296
+        584163620009
+        584266654916
+        584263000743
+        584264680007
+        584162984555
+        584166042223
+        584269500036
+        584165807888
+        584262077768
+        584269718881
+        584266656060
+        584269500093
+        584168287444
+        584264022666
+        584266605187
+        584164954000
+        584167407778
+        584167776213
+        584262167779
+        584266680795
+        584266640852
+        584164902555
+        584265553287
+        584263000763
+        584164441782
+        584163906668
+        584268887428
+        584265911159
+        584269402999
+        584167776246
+        584266654960
+        584265406111
+        584265553242
+        584266605144
+        584268562220
+        584167776265
+        584163555063
+        584266656081
+        584167772504
+        584164441718
+        584266605186
+        584266740007
+        584168577709
+        584163760999
+        584261600222
+        584262077794
+        584269500045
+        584164441773
+        584266654902
+        584163695888
+        584268562221
+        584264599953
+        584266640890
+        584265911189
+        584266638390
+        584265911144
+        584266656058
+        584269189994
+        584269500055
+        584166394555
+        584166649244
+        584263000724
+        584167776258
+        584265444841
+        584266605151
+        584168577747
+        584165554546
+        584268887480
+        584263000729
+        584167999361
+        584264599983
+        584263723338
+        584265444839
+        584169333060
+        584165554581
+        EOF
+    
+    - name: Create checker script
+      run: |
+        cat > wa_checker_headless.py << 'EOFPY'
+        from selenium import webdriver
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from selenium.common.exceptions import TimeoutException, NoSuchElementException
+        import time
+        import json
+        import sys
+        from datetime import datetime
+        
+        class WACheckerHeadless:
+            def __init__(self):
+                self.options = Options()
+                self.options.add_argument('--headless')
+                self.options.add_argument('--no-sandbox')
+                self.options.add_argument('--disable-dev-shm-usage')
+                self.options.add_argument('--disable-gpu')
+                self.options.add_argument('--disable-blink-features=AutomationControlled')
+                self.options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                
+                self.service = Service('/usr/bin/chromedriver')
+                self.driver = None
+                self.results = {
+                    'active': [],
+                    'inactive': [],
+                    'errors': []
+                }
+            
+            def start(self):
+                print("🚀 Starting headless Chrome...")
+                self.driver = webdriver.Chrome(service=self.service, options=self.options)
+                
+            def check_via_api(self, number):
+                """Check using wa.me redirect method"""
+                url = f"https://wa.me/{number}"
+                result = {
+                    'number': number,
+                    'status': 'unknown',
+                    'timestamp': datetime.now().isoformat()
+                }
+                
+                try:
+                    self.driver.get(url)
+                    time.sleep(2)
+                    
+                    current_url = self.driver.current_url
+                    page_source = self.driver.page_source.lower()
+                    
+                    # Check if redirected to chat
+                    if 'send?phone=' in current_url or 'chat' in current_url:
+                        # Check for error messages
+                        if 'phone number shared via url is invalid' in page_source:
+                            result['status'] = 'inactive'
+                            result['reason'] = 'Invalid number'
+                        elif 'no account with that number' in page_source:
+                            result['status'] = 'inactive'
+                            result['reason'] = 'No WhatsApp account'
+                        else:
+                            result['status'] = 'active'
+                    else:
+                        result['status'] = 'inactive'
+                        result['reason'] = 'No redirect to chat'
+                    
+                except Exception as e:
+                    result['status'] = 'error'
+                    result['error'] = str(e)
+                
+                return result
+            
+            def check_numbers(self, numbers, delay=3):
+                total = len(numbers)
+                print(f"\n{'='*60}")
+                print(f"Checking {total} numbers...")
+                print(f"{'='*60}\n")
+                
+                for i, number in enumerate(numbers, 1):
+                    print(f"[{i}/{total}] Checking +{number}...", end=' ')
+                    
+                    result = self.check_via_api(number)
+                    
+                    if result['status'] == 'active':
+                        self.results['active'].append(result)
+                        print("✅ ACTIVE")
+                    elif result['status'] == 'inactive':
+                        self.results['inactive'].append(result)
+                        print(f"❌ INACTIVE ({result.get('reason', 'Unknown')})")
+                    else:
+                        self.results['errors'].append(result)
+                        print(f"⚠️ ERROR: {result.get('error', 'Unknown')}")
+                    
+                    if i < total:
+                        time.sleep(delay)
+            
+            def save_results(self):
+                # JSON result
+                output = {
+                    'timestamp': datetime.now().isoformat(),
+                    'summary': {
+                        'total': len(self.results['active']) + len(self.results['inactive']) + len(self.results['errors']),
+                        'active': len(self.results['active']),
+                        'inactive': len(self.results['inactive']),
+                        'errors': len(self.results['errors'])
+                    },
+                    'results': self.results
+                }
+                
+                with open('wa_results.json', 'w') as f:
+                    json.dump(output, f, indent=2)
+                
+                # Active numbers only
+                with open('wa_active_numbers.txt', 'w') as f:
+                    f.write("="*60 + "\n")
+                    f.write("NOMOR WHATSAPP AKTIF\n")
+                    f.write("="*60 + "\n\n")
+                    for item in self.results['active']:
+                        f.write(f"+{item['number']}\n")
+                    f.write(f"\nTotal: {len(self.results['active'])} nomor aktif\n")
+                
+                print("\n" + "="*60)
+                print("📊 SUMMARY")
+                print("="*60)
+                print(f"✅ Active    : {len(self.results['active'])}")
+                print(f"❌ Inactive  : {len(self.results['inactive'])}")
+                print(f"⚠️ Errors    : {len(self.results['errors'])}")
+                print(f"📝 Total     : {output['summary']['total']}")
+                print("="*60)
+            
+            def close(self):
+                if self.driver:
+                    self.driver.quit()
+        
+        if __name__ == "__main__":
+            # Read numbers
+            with open('numbers.txt', 'r') as f:
+                numbers = [line.strip() for line in f if line.strip()]
+            
+            delay = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+            
+            checker = WACheckerHeadless()
+            try:
+                checker.start()
+                checker.check_numbers(numbers, delay=delay)
+                checker.save_results()
+            except Exception as e:
+                print(f"❌ Fatal error: {e}")
+            finally:
+                checker.close()
+        EOFPY
+    
+    - name: Run checker
+      run: |
+        python wa_checker_headless.py ${{ github.event.inputs.delay }}
+    
+    - name: Upload results
+      uses: actions/upload-artifact@v3
+      with:
+        name: wa-check-results
+        path: |
+          wa_results.json
+          wa_active_numbers.txt
+    
+    - name: Display results
+      if: always()
+      run: |
+        echo "📊 Results:"
+        if [ -f wa_results.json ]; then
+          cat wa_results.json
+        fi
+        echo ""
+        echo "✅ Active numbers:"
+        if [ -f wa_active_numbers.txt ]; then
+          cat wa_active_numbers.txt
+        fi
+    
+    - name: Commit results (optional)
+      if: success()
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add -f wa_results.json wa_active_numbers.txt || true
+        git commit -m "Update WA check results - $(date +'%Y-%m-%d %H:%M:%S')" || true
+        git push || true
