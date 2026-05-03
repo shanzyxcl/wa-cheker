@@ -1,0 +1,7 @@
+cat > .gitignore << EOF
+*.pyc
+__pycache__/
+.DS_Store
+*.log
+wa_session/
+EOF
