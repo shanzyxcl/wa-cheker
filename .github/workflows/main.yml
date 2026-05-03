@@ -20,6 +20,13 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
     
+    - name: Send start notification
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+          -d parse_mode="Markdown" \
+          -d text="🚀 *WA Number Checker Started*%0A%0A⏰ Time: $(date +'%Y-%m-%d %H:%M:%S')%0A📊 Status: Processing..."
+    
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -39,10 +46,20 @@ jobs:
       run: |
         if [ ! -f numbers.txt ]; then
           echo "❌ File numbers.txt tidak ditemukan di repository!"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d parse_mode="Markdown" \
+            -d text="❌ *ERROR*%0A%0AFile \`numbers.txt\` tidak ditemukan di repository!"
           exit 1
         fi
+        TOTAL_NUMBERS=$(wc -l < numbers.txt)
         echo "✅ File numbers.txt ditemukan"
-        echo "Total nomor: $(wc -l < numbers.txt)"
+        echo "Total nomor: $TOTAL_NUMBERS"
+        
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+          -d parse_mode="Markdown" \
+          -d text="✅ *File Loaded*%0A%0A📱 Total numbers: *${TOTAL_NUMBERS}*%0A⏱ Delay: *${{ github.event.inputs.delay }}s*"
         
     - name: Create checker script
       run: |
@@ -57,6 +74,8 @@ jobs:
         import time
         import json
         import sys
+        import os
+        import requests
         from datetime import datetime
         
         class WACheckerHeadless:
@@ -76,6 +95,25 @@ jobs:
                     'inactive': [],
                     'errors': []
                 }
+                
+                # Telegram config
+                self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+                self.chat_id = os.getenv('TELEGRAM_CHAT_ID')
+            
+            def send_telegram(self, message):
+                """Send message to Telegram"""
+                if not self.bot_token or not self.chat_id:
+                    return
+                try:
+                    url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+                    data = {
+                        'chat_id': self.chat_id,
+                        'text': message,
+                        'parse_mode': 'Markdown'
+                    }
+                    requests.post(url, data=data)
+                except:
+                    pass
             
             def start(self):
                 print("🚀 Starting headless Chrome...")
@@ -118,7 +156,7 @@ jobs:
                 
                 return result
             
-            def check_numbers(self, numbers, delay=3):
+            def check_numbers(self, numbers, delay=3, batch_size=10):
                 total = len(numbers)
                 print(f"\n{'='*60}")
                 print(f"Checking {total} numbers...")
@@ -138,6 +176,21 @@ jobs:
                     else:
                         self.results['errors'].append(result)
                         print(f"⚠️ ERROR: {result.get('error', 'Unknown')}")
+                    
+                    # Send progress update every batch_size
+                    if i % batch_size == 0:
+                        active_count = len(self.results['active'])
+                        inactive_count = len(self.results['inactive'])
+                        error_count = len(self.results['errors'])
+                        progress = (i / total) * 100
+                        
+                        msg = f"📊 *Progress Update*\n\n"
+                        msg += f"✅ Active: *{active_count}*\n"
+                        msg += f"❌ Inactive: *{inactive_count}*\n"
+                        msg += f"⚠️ Errors: *{error_count}*\n"
+                        msg += f"📈 Progress: *{i}/{total}* ({progress:.1f}%)"
+                        
+                        self.send_telegram(msg)
                     
                     if i < total:
                         time.sleep(delay)
@@ -175,6 +228,25 @@ jobs:
                 print(f"⚠️ Errors    : {len(self.results['errors'])}")
                 print(f"📝 Total     : {output['summary']['total']}")
                 print("="*60)
+                
+                # Send final summary to Telegram
+                msg = f"✅ *Check Complete!*\n\n"
+                msg += f"📊 *SUMMARY*\n"
+                msg += f"✅ Active: *{len(self.results['active'])}*\n"
+                msg += f"❌ Inactive: *{len(self.results['inactive'])}*\n"
+                msg += f"⚠️ Errors: *{len(self.results['errors'])}*\n"
+                msg += f"📝 Total: *{output['summary']['total']}*\n\n"
+                msg += f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                
+                self.send_telegram(msg)
+                
+                # Send active numbers if any
+                if self.results['active']:
+                    active_list = "\n".join([f"+{item['number']}" for item in self.results['active'][:10]])
+                    msg = f"📱 *Active Numbers (Top 10)*\n\n{active_list}"
+                    if len(self.results['active']) > 10:
+                        msg += f"\n\n_...and {len(self.results['active']) - 10} more_"
+                    self.send_telegram(msg)
             
             def close(self):
                 if self.driver:
@@ -192,21 +264,26 @@ jobs:
             print(f"✅ Loaded {len(numbers)} numbers from numbers.txt")
             
             delay = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+            batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 10
             
             checker = WACheckerHeadless()
             try:
                 checker.start()
-                checker.check_numbers(numbers, delay=delay)
+                checker.check_numbers(numbers, delay=delay, batch_size=batch_size)
                 checker.save_results()
             except Exception as e:
                 print(f"❌ Fatal error: {e}")
+                checker.send_telegram(f"❌ *Fatal Error*\n\n```\n{str(e)}\n```")
             finally:
                 checker.close()
         EOFPY
     
     - name: Run checker
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        python wa_checker_headless.py ${{ github.event.inputs.delay }}
+        python wa_checker_headless.py ${{ github.event.inputs.delay }} ${{ github.event.inputs.batch_size }}
     
     - name: Upload results
       uses: actions/upload-artifact@v4
@@ -229,7 +306,7 @@ jobs:
           cat wa_active_numbers.txt
         fi
     
-    - name: Commit results (optional)
+    - name: Commit results
       if: success()
       run: |
         git config --local user.email "justinaxie911@gmail.com"
@@ -237,3 +314,11 @@ jobs:
         git add -f wa_results.json wa_active_numbers.txt || true
         git commit -m "Update WA check results - $(date +'%Y-%m-%d %H:%M:%S')" || true
         git push || true
+    
+    - name: Send error notification
+      if: failure()
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+          -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+          -d parse_mode="Markdown" \
+          -d text="❌ *Workflow Failed!*%0A%0A⏰ Time: $(date +'%Y-%m-%d %H:%M:%S')%0A🔗 Check logs: https://github.com/${{ github.repository }}/actions"
